@@ -1,0 +1,51 @@
+# pir's map. `todography lint` checks it; `todography open` draws it.
+# Format: https://mkmik.github.io/todography/reference/format.html
+# Goals and milestones come from the pir PRD: https://claude.ai/artifact/XBEngRi9Lza4uFqwAVkmgv
+title = "pir"
+
+[[band]]
+id = "use"
+title = "What you use"
+
+[[band]]
+id = "loop"
+title = "What it does"
+
+[[band]]
+id = "ship"
+title = "How it ships"
+
+[[band]]
+id = "deps"
+title = "What it stands on"
+
+[[milestone]]
+id = "m1"
+title = "Plain mode"
+summary = "Pull loop, build, restart and clean shutdown with prefixed output; replaces ~/bin/pull-go-install"
+
+[[milestone]]
+id = "m2"
+title = "Split screen"
+summary = "Build and tool output side by side, each in a pty with a terminal emulator, plus a status bar"
+
+[[milestone]]
+id = "m3"
+title = "Extras"
+summary = "The PRD's P1 items: scrollback, log files, pulled commit subjects, zoom"
+
+[[kind]]
+id = "code"
+summary = "Code in this repository"
+
+[[kind]]
+id = "infra"
+summary = "Repository machinery: tests, CI, this map"
+
+[[kind]]
+id = "dep"
+summary = "A Rust crate pir depends on"
+
+[[kind]]
+id = "external"
+summary = "A program pir runs"
