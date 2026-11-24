@@ -1,6 +1,6 @@
 +++
 title = "Split screen"
-summary = "Build output left, tool output right, each a terminal emulator; status bar and keys below"
+summary = "Build on top, tool below, each a terminal emulator; a thin draggable line between; status bar"
 aka = ["TUI", "panes", "status bar", "ratatui"]
 kind = "code"
 intent = "goal"
@@ -10,12 +10,12 @@ refs = ["src/main.rs"]
 
 [[feature]]
 id = "panes"
-title = "Two columns, each a vt100 emulator, so colors and progress bars render"
+title = "Two halves, each a vt100 emulator, so colors and progress bars render"
 status = "done"
 
 [[feature]]
 id = "pty-size"
-title = "Each child's pty sized to its column and resized with the window (R10)"
+title = "Each child's pty sized to its half and resized with the window (R10)"
 status = "done"
 
 [[feature]]
@@ -30,31 +30,37 @@ status = "done"
 
 [[feature]]
 id = "scrollback"
-title = "10,000 lines per column; PgUp, PgDn, arrows, Home, End (R11)"
+title = "10,000 lines per half; PgUp, PgDn, arrows, Home, End (R11)"
 status = "done"
 milestone = "m3"
 
 [[feature]]
 id = "zoom"
-title = "z makes the focused column full width (R14)"
+title = "z makes the focused half fill the screen (R14)"
 status = "done"
 milestone = "m3"
 
 [[feature]]
 id = "reflow"
-title = "Re-wrap text already on screen when a column changes width"
+title = "Re-wrap text already on screen when a half changes width"
 status = "todo"
 note = "vt100 doesn't reflow; it would mean keeping raw output and replaying it at the new width"
 
 [[feature]]
+id = "drag-split"
+title = "Borderless panes; drag the one-row divider with the mouse to resize, click a pane to focus it"
+status = "done"
+note = "Takes the mouse: selecting text needs Shift (Option on macOS terminals)"
+
+[[feature]]
 id = "mouse-scroll"
 title = "Scroll with the mouse wheel"
-status = "dropped"
-note = "Mouse capture would stop people from selecting text with the mouse"
+status = "done"
+note = "Needed once drag-split captured the mouse, since the terminal no longer scrolls"
 
 [[needs]]
 on = "/deps/ratatui"
-why = "Layout, borders, status bar, raw mode and key events"
+why = "Layout, divider, status bar, raw mode, key and mouse events"
 
 [[needs]]
 on = "/deps/tui-term"
