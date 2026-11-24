@@ -12,13 +12,16 @@ use std::{
 };
 
 use clap::Parser as _;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use ratatui::{
     DefaultTerminal,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
-    widgets::{Block, Paragraph},
+    text::{Line, Span},
+    widgets::Paragraph,
 };
 use tui_term::{
     vt100,
@@ -76,6 +79,7 @@ enum Ev {
     Exit(usize, u64, String, bool),
     Pulled(Pull),
     Key(event::KeyEvent),
+    Mouse(MouseEvent),
     Signal,
 }
 
@@ -205,6 +209,10 @@ struct App {
     exit_code: i32,
     focus: usize,
     zoom: bool,
+    /// Share of the screen height the build pane gets; dragged with the mouse.
+    split: f32,
+    dragging: bool,
+    area: Rect,
 }
 
 impl App {
@@ -440,11 +448,7 @@ impl App {
 
     fn on_key(&mut self, key: event::KeyEvent) {
         let rows = self.sizes[self.focus].0 as usize;
-        let scroll = |app: &mut Self, f: &dyn Fn(usize) -> usize| {
-            let s = app.panes[app.focus].screen_mut();
-            let to = f(s.scrollback());
-            s.set_scrollback(to);
-        };
+        let scroll = |app: &mut Self, f: &dyn Fn(usize) -> usize| app.scroll(f);
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit(130),
             KeyCode::Char('q') => self.quit(0),
@@ -462,6 +466,37 @@ impl App {
             KeyCode::Down => scroll(self, &|s| s.saturating_sub(1)),
             KeyCode::Home => scroll(self, &|_| usize::MAX),
             KeyCode::End => scroll(self, &|_| 0),
+            _ => {}
+        }
+    }
+
+    fn scroll(&mut self, f: &dyn Fn(usize) -> usize) {
+        let s = self.panes[self.focus].screen_mut();
+        let to = f(s.scrollback());
+        s.set_scrollback(to);
+    }
+
+    fn on_mouse(&mut self, m: MouseEvent) {
+        let (rects, divider, _) = self.pane_rects(self.area);
+        let hit = [BUILD, RUN]
+            .into_iter()
+            .find(|&k| rects[k].is_some_and(|r| (r.y..r.bottom()).contains(&m.row)));
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if m.row == divider.y && !self.zoom => {
+                self.dragging = true;
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
+                let h = self.area.height.saturating_sub(2).max(1);
+                self.split = (m.row.saturating_sub(self.area.y) as f32 / h as f32).clamp(0.0, 1.0);
+            }
+            MouseEventKind::Up(_) => self.dragging = false,
+            MouseEventKind::Down(_) => self.focus = hit.unwrap_or(self.focus),
+            // Capturing the mouse takes the wheel away from the terminal, so scroll here.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.focus = hit.unwrap_or(self.focus);
+                let up = m.kind == MouseEventKind::ScrollUp;
+                self.scroll(&|s| if up { s + 3 } else { s.saturating_sub(3) });
+            }
             _ => {}
         }
     }
@@ -487,6 +522,7 @@ impl App {
                 self.maybe_build(false);
             }
             Ev::Key(k) => self.on_key(k),
+            Ev::Mouse(m) => self.on_mouse(m),
             Ev::Signal => self.quit(130),
         }
     }
@@ -502,27 +538,38 @@ impl App {
         }
     }
 
-    fn pane_rects(&self, area: Rect) -> ([Option<Rect>; 2], Rect) {
+    /// Build on top, a one-row divider, run below, status bar last.
+    /// Zoomed, the divider sits on top and the focused pane fills the rest.
+    /// Returns (pane rects, divider, status bar).
+    fn pane_rects(&self, area: Rect) -> ([Option<Rect>; 2], Rect, Rect) {
         let [main, status] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
         if self.zoom {
+            let [divider, pane] =
+                Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(main);
             let mut r = [None, None];
-            r[self.focus] = Some(main);
-            return (r, status);
+            r[self.focus] = Some(pane);
+            return (r, divider, status);
         }
-        let [l, rt] = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(main);
-        ([Some(l), Some(rt)], status)
+        let room = main.height.saturating_sub(1);
+        let top =
+            ((room as f32 * self.split).round() as u16).clamp(1, room.saturating_sub(1).max(1));
+        let [b, divider, r] = Layout::vertical([
+            Constraint::Length(top),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(main);
+        ([Some(b), Some(r)], divider, status)
     }
 
     /// Keep each emulator and pty the size of its visible pane.
     fn sync_sizes(&mut self, area: Rect) {
-        let (rects, _) = self.pane_rects(area);
+        self.area = area;
+        let (rects, _, _) = self.pane_rects(area);
         for k in [BUILD, RUN] {
             let Some(r) = rects[k] else { continue };
-            let size = (
-                r.height.saturating_sub(2).max(1),
-                r.width.saturating_sub(2).max(1),
-            );
+            let size = (r.height.max(1), r.width.max(1));
             if size != self.sizes[k] {
                 self.sizes[k] = size;
                 self.panes[k].screen_mut().set_size(size.0, size.1);
@@ -557,23 +604,25 @@ impl App {
         let head = self.head.as_deref().map(short).unwrap_or("?");
         let q = if self.quitting { " · STOPPING" } else { "" };
         format!(
-            " {} @ {head} · build: {} · run: {run} · {next}{q} │ p pull  b build  r restart  tab focus  z zoom  PgUp/PgDn scroll  q quit",
+            " {} @ {head} · build: {} · run: {run} · {next}{q} │ p pull  b build  r restart  tab focus  z zoom  PgUp/PgDn scroll  drag ── resize  q quit",
             self.branch, self.build_status
         )
     }
 
     fn draw(&self, term: &mut DefaultTerminal) -> io::Result<()> {
         term.draw(|f| {
-            let (rects, status) = self.pane_rects(f.area());
+            let (rects, divider, status) = self.pane_rects(f.area());
+            let line = Style::new().fg(Color::DarkGray);
+            let mut spans = vec![];
             for k in [BUILD, RUN] {
-                let Some(r) = rects[k] else { continue };
                 let screen = self.panes[k].screen();
                 let cmd = if k == BUILD {
                     &self.args.build
                 } else {
                     &self.args.run
                 };
-                let mut title = format!(" {} · {cmd} ", NAMES[k]);
+                let arrow = if k == BUILD { '▲' } else { '▼' };
+                let mut title = format!(" {arrow} {} · {cmd} ", NAMES[k]);
                 if screen.scrollback() > 0 {
                     title += &format!("[scrolled {}] ", screen.scrollback());
                 }
@@ -582,13 +631,18 @@ impl App {
                 } else {
                     Color::DarkGray
                 };
+                spans.extend([Span::styled("──", line), Span::styled(title, color)]);
+                let Some(r) = rects[k] else { continue };
                 let mut cursor = Cursor::default();
                 cursor.hide();
-                let block = Block::bordered()
-                    .title(title)
-                    .border_style(Style::new().fg(color));
-                f.render_widget(PseudoTerminal::new(screen).block(block).cursor(cursor), r);
+                f.render_widget(PseudoTerminal::new(screen).cursor(cursor), r);
             }
+            let used: usize = spans.iter().map(Span::width).sum();
+            spans.push(Span::styled(
+                "─".repeat((divider.width as usize).saturating_sub(used)),
+                line,
+            ));
+            f.render_widget(Line::from(spans), divider);
             f.render_widget(Paragraph::new(self.status_line()).reversed(), status);
         })?;
         Ok(())
@@ -655,15 +709,24 @@ fn main() {
         exit_code: 0,
         focus: RUN,
         zoom: false,
+        split: 0.5,
+        dragging: false,
+        area: Rect::default(),
     };
 
     let mut term = if tui {
         let t = ratatui::init();
+        let _ = crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture);
         thread::spawn(move || {
             loop {
                 match event::read() {
                     Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
                         if tx.send(Ev::Key(k)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Event::Mouse(m)) => {
+                        if tx.send(Ev::Mouse(m)).is_err() {
                             break;
                         }
                     }
@@ -679,6 +742,7 @@ fn main() {
 
     run_loop(&mut app, &rx, term.as_mut());
     if tui {
+        let _ = crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture);
         ratatui::restore();
     }
     std::process::exit(app.exit_code);
@@ -732,5 +796,62 @@ mod tests {
             vec!["partial", "100%"]
         );
         assert_eq!(b, b"x");
+    }
+
+    #[test]
+    fn drag_divider() {
+        let args = Args::parse_from(["pir", "--build", "true", "--run", "true"]);
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App {
+            args,
+            tui: true,
+            tx,
+            id: 0,
+            procs: [None, None],
+            panes: [vt100::Parser::new(1, 1, 0), vt100::Parser::new(1, 1, 0)],
+            sizes: [(1, 1); 2],
+            plain_bufs: [vec![], vec![]],
+            head: None,
+            branch: String::new(),
+            last_built: None,
+            last_pull_lines: vec![],
+            build_again: false,
+            builds: 0,
+            build_status: String::new(),
+            run_status: String::new(),
+            restart_after_stop: false,
+            first_build_done: false,
+            pulling: false,
+            next_pull: Instant::now(),
+            quitting: false,
+            exit_code: 0,
+            focus: RUN,
+            zoom: false,
+            split: 0.5,
+            dragging: false,
+            area: Rect::default(),
+        };
+        // 42 rows: 40 for panes, 1 divider, 1 status bar.
+        app.sync_sizes(Rect::new(0, 0, 80, 42));
+        assert_eq!((app.sizes[BUILD].0, app.sizes[RUN].0), (20, 20));
+        let mouse = |kind, row| MouseEvent {
+            kind,
+            column: 5,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 20));
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 10));
+        app.on_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 10));
+        app.sync_sizes(app.area);
+        assert_eq!((app.sizes[BUILD].0, app.sizes[RUN].0), (10, 30));
+        // Dragging past an edge leaves each pane at least a row.
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 10));
+        app.on_mouse(mouse(MouseEventKind::Drag(MouseButton::Left), 0));
+        app.sync_sizes(app.area);
+        assert_eq!((app.sizes[BUILD].0, app.sizes[RUN].0), (1, 39));
+        // A click in a pane focuses it.
+        app.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0));
+        assert_eq!(app.focus, BUILD);
     }
 }

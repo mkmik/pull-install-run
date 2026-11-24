@@ -24,16 +24,16 @@ pir --build 'make install' --run './run-dev.sh' --plain | tee pir.log
 
 ## Screen
 
-The left column shows build output and `pir`'s own events: what was pulled, build start and result, restarts. The right column shows the tool's output. Both columns are small terminal emulators, so colors and progress bars look the same as in a normal shell. The bottom line shows the branch, commit, build result, tool state and time to the next pull.
+The top half shows build output and `pir`'s own events: what was pulled, build start and result, restarts. The bottom half shows the tool's output. A thin line between them names each half; drag it with the mouse to give one half more rows. Both halves are small terminal emulators, so colors and progress bars look the same as in a normal shell. The bottom line shows the branch, commit, build result, tool state and time to the next pull.
 
 | Key | Action |
 | --- | --- |
 | `p` | Pull now |
 | `b` | Build now, even without a new commit |
 | `r` | Restart the tool |
-| `Tab` | Switch which column has focus (yellow border) |
-| `z` | Make the focused column full width, and back |
-| `PgUp` `PgDn` `↑` `↓` `Home` `End` | Scroll the focused column (10,000 lines kept) |
+| `Tab` or click | Switch which half has focus (its name on the line turns yellow) |
+| `z` | Make the focused half fill the screen, and back |
+| `PgUp` `PgDn` `↑` `↓` `Home` `End`, mouse wheel | Scroll the focused half (10,000 lines kept) |
 | `q` | Quit |
 | `Ctrl-C` | Quit with exit code 130. Press it again to kill everything without waiting. |
 
@@ -49,7 +49,8 @@ The left column shows build output and `pir`'s own events: what was pulled, buil
 ## Known limits
 
 - Scrolling uses keys only. Turning on mouse-wheel scrolling would stop you from selecting text with the mouse.
-- Text already on screen is not re-wrapped when a column changes width (on `z` or a window resize).
+- pir takes the mouse, so selecting text needs the terminal's bypass key (Shift in most terminals, Option in iTerm2 and Terminal.app).
+- Text already on screen is not re-wrapped when a half changes width (on `z` or a window resize).
 - If `pir` itself is killed with SIGKILL, the tool keeps running. Its pid is logged when it starts.
 
 ## Tests and CI
