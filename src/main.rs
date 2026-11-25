@@ -33,12 +33,14 @@ use tui_term::{
     about = "Pull a git repo periodically; on a new commit rebuild, and restart the tool if the build succeeds"
 )]
 struct Args {
-    /// Shell command that compiles and installs (exit 0 = success)
+    /// Shell command that compiles and installs (exit 0 = success).
+    /// Default: `just install`, `just build`, `go install` or `cargo install --path .`,
+    /// whichever fits the repo first
     #[arg(long)]
-    build: String,
-    /// Shell command that runs the tool
+    build: Option<String>,
+    /// Shell command that runs the tool. Without it pir only pulls and builds
     #[arg(long)]
-    run: String,
+    run: Option<String>,
     /// Time between pulls (e.g. 30s, 1m, 1h)
     #[arg(long, default_value = "1m", value_parser = parse_dur)]
     every: Duration,
@@ -66,6 +68,37 @@ fn parse_dur(s: &str) -> Result<Duration, String> {
         _ => return Err(format!("bad unit in {s:?}; use s, m or h")),
     };
     Ok(Duration::from_secs(n * mul))
+}
+
+/// The build command to use when --build is not given (t8y:/use/cli#autodetect).
+fn detect_build(dir: &Path) -> Option<String> {
+    if dir.join("justfile").exists() || dir.join("Justfile").exists() {
+        let out = Command::new("just")
+            .arg("--summary")
+            .current_dir(dir)
+            .output();
+        if let Some(r) = out
+            .ok()
+            .and_then(|o| pick_just(&String::from_utf8_lossy(&o.stdout)))
+        {
+            return Some(format!("just {r}"));
+        }
+    }
+    if dir.join("go.mod").exists() {
+        return Some("go install".into());
+    }
+    if dir.join("Cargo.toml").exists() {
+        return Some("cargo install --path .".into());
+    }
+    None
+}
+
+/// Picks `install`, else `build`, from `just --summary` output.
+fn pick_just(summary: &str) -> Option<&'static str> {
+    let recipes: Vec<&str> = summary.split_whitespace().collect();
+    ["install", "build"]
+        .into_iter()
+        .find(|r| recipes.contains(r))
 }
 
 const SCROLLBACK: usize = 10_000;
@@ -231,6 +264,20 @@ impl App {
         p.process(format!("\x1b[0m{nl}\x1b[36m{line}\x1b[0m\r\n").as_bytes());
     }
 
+    fn cmd(&self, k: usize) -> &str {
+        let c = if k == BUILD {
+            &self.args.build
+        } else {
+            &self.args.run
+        };
+        c.as_deref().unwrap_or("")
+    }
+
+    /// No --run: only the build half is shown and nothing is ever started.
+    fn solo(&self) -> bool {
+        self.args.run.is_none()
+    }
+
     fn log(&mut self, msg: &str) {
         self.log_to(BUILD, msg);
     }
@@ -256,7 +303,7 @@ impl App {
             "── build #{} @ {}: $ {}",
             self.builds,
             self.head.as_deref().map(short).unwrap_or("?"),
-            self.args.build
+            self.cmd(BUILD)
         );
         self.log(&msg);
         self.build_status = "running".into();
@@ -264,7 +311,7 @@ impl App {
     }
 
     fn restart_run(&mut self) {
-        if self.quitting {
+        if self.quitting || self.solo() {
             return;
         }
         if self.procs[RUN].is_some() {
@@ -322,14 +369,7 @@ impl App {
             pixel_height: 0,
         })?;
         let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.args([
-            "-c",
-            if k == BUILD {
-                &self.args.build
-            } else {
-                &self.args.run
-            },
-        ]);
+        cmd.args(["-c", self.cmd(k)]);
         cmd.cwd(&self.args.dir);
         let mut child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
@@ -370,7 +410,7 @@ impl App {
         if k == RUN {
             self.log_to(
                 RUN,
-                &format!("── run started (pid {pid}): $ {}", self.args.run),
+                &format!("── run started (pid {pid}): $ {}", self.cmd(RUN)),
             );
             if self.tui {
                 self.log(&format!("run started (pid {pid})"));
@@ -426,7 +466,7 @@ impl App {
             }
             if ok {
                 self.restart_run();
-            } else if !self.first_build_done && self.procs[RUN].is_none() {
+            } else if !self.first_build_done && self.procs[RUN].is_none() && !self.solo() {
                 self.log("starting the previously installed tool anyway");
                 self.spawn(RUN);
             }
@@ -454,12 +494,12 @@ impl App {
             KeyCode::Char('q') => self.quit(0),
             KeyCode::Char('p') if !self.pulling => self.start_pull(),
             KeyCode::Char('b') => self.maybe_build(true),
-            KeyCode::Char('r') => {
+            KeyCode::Char('r') if !self.solo() => {
                 self.log("restart requested");
                 self.restart_run();
             }
-            KeyCode::Tab => self.focus = 1 - self.focus,
-            KeyCode::Char('z') => self.zoom = !self.zoom,
+            KeyCode::Tab if !self.solo() => self.focus = 1 - self.focus,
+            KeyCode::Char('z') if !self.solo() => self.zoom = !self.zoom,
             KeyCode::PageUp => scroll(self, &|s| s + rows / 2),
             KeyCode::PageDown => scroll(self, &|s| s.saturating_sub(rows / 2)),
             KeyCode::Up => scroll(self, &|s| s + 1),
@@ -539,12 +579,12 @@ impl App {
     }
 
     /// Build on top, a one-row divider, run below, status bar last.
-    /// Zoomed, the divider sits on top and the focused pane fills the rest.
+    /// Zoomed (or with no --run), the divider sits on top and the focused pane fills the rest.
     /// Returns (pane rects, divider, status bar).
     fn pane_rects(&self, area: Rect) -> ([Option<Rect>; 2], Rect, Rect) {
         let [main, status] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
-        if self.zoom {
+        if self.zoom || self.solo() {
             let [divider, pane] =
                 Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(main);
             let mut r = [None, None];
@@ -587,9 +627,10 @@ impl App {
 
     fn status_line(&self) -> String {
         let run = match &self.procs[RUN] {
-            Some(p) if p.kill_at.is_some() => "stopping".to_string(),
-            Some(p) => format!("up {}s", p.started.elapsed().as_secs()),
-            None => self.run_status.clone(),
+            _ if self.solo() => String::new(),
+            Some(p) if p.kill_at.is_some() => " · run: stopping".to_string(),
+            Some(p) => format!(" · run: up {}s", p.started.elapsed().as_secs()),
+            None => format!(" · run: {}", self.run_status),
         };
         let next = if self.pulling {
             "pulling".to_string()
@@ -603,8 +644,13 @@ impl App {
         };
         let head = self.head.as_deref().map(short).unwrap_or("?");
         let q = if self.quitting { " · STOPPING" } else { "" };
+        let keys = if self.solo() {
+            "p pull  b build  PgUp/PgDn scroll  q quit"
+        } else {
+            "p pull  b build  r restart  tab focus  z zoom  PgUp/PgDn scroll  drag ── resize  q quit"
+        };
         format!(
-            " {} @ {head} · build: {} · run: {run} · {next}{q} │ p pull  b build  r restart  tab focus  z zoom  PgUp/PgDn scroll  drag ── resize  q quit",
+            " {} @ {head} · build: {}{run} · {next}{q} │ {keys}",
             self.branch, self.build_status
         )
     }
@@ -614,13 +660,10 @@ impl App {
             let (rects, divider, status) = self.pane_rects(f.area());
             let line = Style::new().fg(Color::DarkGray);
             let mut spans = vec![];
-            for k in [BUILD, RUN] {
+            let panes: &[usize] = if self.solo() { &[BUILD] } else { &[BUILD, RUN] };
+            for &k in panes {
                 let screen = self.panes[k].screen();
-                let cmd = if k == BUILD {
-                    &self.args.build
-                } else {
-                    &self.args.run
-                };
+                let cmd = self.cmd(k);
                 let arrow = if k == BUILD { '▲' } else { '▼' };
                 let mut title = format!(" {arrow} {} · {cmd} ", NAMES[k]);
                 if screen.scrollback() > 0 {
@@ -662,6 +705,16 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if args.build.is_none() {
+        args.build = detect_build(&args.dir);
+        if args.build.is_none() {
+            eprintln!(
+                "pir: no --build given, and no justfile install/build recipe, go.mod or Cargo.toml in {}",
+                args.dir.display()
+            );
+            std::process::exit(2);
+        }
+    }
     if let Some(d) = &args.log_dir
         && let Err(e) = std::fs::create_dir_all(d)
     {
@@ -713,6 +766,9 @@ fn main() {
         dragging: false,
         area: Rect::default(),
     };
+    if app.solo() {
+        app.focus = BUILD;
+    }
 
     let mut term = if tui {
         let t = ratatui::init();
@@ -796,6 +852,21 @@ mod tests {
             vec!["partial", "100%"]
         );
         assert_eq!(b, b"x");
+    }
+
+    #[test]
+    fn autodetect() {
+        assert_eq!(pick_just("build install test"), Some("install"));
+        assert_eq!(pick_just("build test\n"), Some("build"));
+        assert_eq!(pick_just("rebuild installer"), None);
+        let d = std::env::temp_dir().join(format!("pir-detect-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(detect_build(&d), None);
+        std::fs::write(d.join("Cargo.toml"), "").unwrap();
+        assert_eq!(detect_build(&d).as_deref(), Some("cargo install --path ."));
+        std::fs::write(d.join("go.mod"), "").unwrap();
+        assert_eq!(detect_build(&d).as_deref(), Some("go install"));
+        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
