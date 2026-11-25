@@ -53,6 +53,11 @@ status = "done"
 note = "Takes the mouse: selecting text needs Shift (Option on macOS terminals)"
 
 [[feature]]
+id = "solo"
+title = "Without --run, only the build half, with no divider to drag"
+status = "done"
+
+[[feature]]
 id = "mouse-scroll"
 title = "Scroll with the mouse wheel"
 status = "done"

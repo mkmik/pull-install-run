@@ -10,12 +10,13 @@ cargo install --path .
 pir --build 'go install ./cmd/foo' --run 'foo serve --port 8080'
 pir --build 'cargo install --path .' --run 'bar watch' --every 30s
 pir --build 'make install' --run './run-dev.sh' --plain | tee pir.log
+pir                          # guess the build, keep it installed, run nothing
 ```
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--build` | required | Shell command that compiles and installs. Exit code 0 means success. |
-| `--run` | required | Shell command that runs the tool. |
+| `--build` | guessed | Shell command that compiles and installs. Exit code 0 means success. If left out, pir uses the first that fits the repo: `just install`, then `just build` (when a `justfile` or `Justfile` has that recipe), `go install` (when there is a `go.mod`), `cargo install --path .` (when there is a `Cargo.toml`). |
+| `--run` | none | Shell command that runs the tool. If left out, pir only pulls and builds: the screen shows just the build output, and `r`, `Tab` and `z` do nothing. |
 | `--every` | `1m` | Time between pulls (`30s`, `5m`, `1h`). |
 | `--stop-timeout` | `10s` | How long to wait after SIGTERM before SIGKILL. |
 | `--plain` | off | No split screen. Each line is prefixed with `[build]`, `[run]` or `[pir]`. Turns on by itself when stdout is not a terminal. |
