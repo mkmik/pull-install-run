@@ -773,6 +773,11 @@ fn main() {
     let mut term = if tui {
         let t = ratatui::init();
         let _ = crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture);
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            hook(info);
+        }));
         thread::spawn(move || {
             loop {
                 match event::read() {
@@ -798,10 +803,21 @@ fn main() {
 
     run_loop(&mut app, &rx, term.as_mut());
     if tui {
-        let _ = crossterm::execute!(io::stdout(), crossterm::event::DisableMouseCapture);
-        ratatui::restore();
+        restore_terminal();
     }
     std::process::exit(app.exit_code);
+}
+
+/// Undo everything the TUI changed. `ratatui::restore` leaves raw mode and the
+/// alternate screen but not the cursor (Terminal's Drop shows it, and
+/// `process::exit` skips Drop) or mouse capture (we turned that on ourselves).
+fn restore_terminal() {
+    let _ = crossterm::execute!(
+        io::stdout(),
+        crossterm::event::DisableMouseCapture,
+        crossterm::cursor::Show
+    );
+    ratatui::restore();
 }
 
 fn run_loop(app: &mut App, rx: &Receiver<Ev>, mut term: Option<&mut DefaultTerminal>) {
